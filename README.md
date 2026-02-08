@@ -1,5 +1,5 @@
 # ============================================================
-# Home Credit - Data Preparation Script
+# Data Preparation
 # IS 6850 (Spring 2026)
 # Purpose: reusable cleaning + feature engineering + aggregation
 # ============================================================
