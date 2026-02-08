@@ -11,7 +11,7 @@ library(tidyverse)
 # ----------------------------
 
 fix_days_employed <- function(df) {
-  # DAYS_EMPLOYED == 365243 is a known placeholder value (anomaly)
+
   if ("DAYS_EMPLOYED" %in% names(df)) {
     df <- df %>%
       mutate(DAYS_EMPLOYED = ifelse(DAYS_EMPLOYED == 365243, NA, DAYS_EMPLOYED))
@@ -20,8 +20,7 @@ fix_days_employed <- function(df) {
 }
 
 add_basic_features <- function(df) {
-  # Simple ratios that often help in credit risk
-  # (Check columns exist to avoid errors)
+
   if (all(c("AMT_CREDIT", "AMT_INCOME_TOTAL") %in% names(df))) {
     df <- df %>% mutate(ratio_credit_income = AMT_CREDIT / AMT_INCOME_TOTAL)
   }
@@ -32,7 +31,6 @@ add_basic_features <- function(df) {
     df <- df %>% mutate(ratio_goods_credit = AMT_GOODS_PRICE / AMT_CREDIT)
   }
 
-  # Convert day-based demographics into years (more interpretable)
   if ("DAYS_BIRTH" %in% names(df)) {
     df <- df %>% mutate(age_years = -DAYS_BIRTH / 365)
   }
@@ -44,8 +42,7 @@ add_basic_features <- function(df) {
 }
 
 add_missing_indicators <- function(df, cols) {
-  # Add a 0/1 indicator for missingness (often predictive)
-  # cols should be a character vector of column names (e.g., EXT_SOURCE_1..3)
+
   for (cname in cols) {
     if (cname %in% names(df)) {
       new_name <- paste0(cname, "_NA")
@@ -60,7 +57,7 @@ add_missing_indicators <- function(df, cols) {
 # -----------------------------------------
 
 fit_imputer <- function(train_df, numeric_cols) {
-  # Store medians computed from TRAIN ONLY (avoid leakage)
+
   medians <- map_dbl(numeric_cols, function(cname) {
     if (cname %in% names(train_df)) median(train_df[[cname]], na.rm = TRUE) else NA_real_
   })
@@ -83,7 +80,7 @@ apply_imputer <- function(df, imputer_tbl) {
 # -----------------------------------------
 
 aggregate_bureau <- function(bureau_df) {
-  # Example aggregation at SK_ID_CURR level
+
   bureau_df %>%
     group_by(SK_ID_CURR) %>%
     summarize(
@@ -94,61 +91,66 @@ aggregate_bureau <- function(bureau_df) {
     )
 }
 
-# You will add these later when you have the files:
-# aggregate_previous_application <- function(prev_df) { ... }
-# aggregate_installments_payments <- function(inst_df) { ... }
 
 # -----------------------------------------
 # 4) Master pipeline functions
 # -----------------------------------------
 
-prep_application_features <- function(df) {
-  df %>%
-    fix_days_employed() %>%
-    add_basic_features() %>%
-    add_missing_indicators(cols = c("EXT_SOURCE_1", "EXT_SOURCE_2", "EXT_SOURCE_3"))
-}
+library(tidyverse)
 
-# Build everything using TRAIN data
-build_prep_objects <- function(app_train, bureau_df = NULL) {
-  # 1) basic feature creation
-  train_feat <- prep_application_features(app_train)
+# 1) Quick sanity check: basic numeric summaries
+num_cols <- app_train %>% select(where(is.numeric))
 
-  # 2) choose numeric cols to impute (example: EXT_SOURCE + ratios)
-  numeric_cols <- intersect(
-    c("EXT_SOURCE_1", "EXT_SOURCE_2", "EXT_SOURCE_3",
-      "ratio_credit_income", "ratio_annuity_income", "ratio_goods_credit",
-      "age_years", "emp_years"),
-    names(train_feat)
+summary_tbl <- num_cols %>%
+  summarise(across(everything(),
+                   list(min = ~min(.x, na.rm = TRUE),
+                        max = ~max(.x, na.rm = TRUE)),
+                   .names = "{.col}_{.fn}"))
+
+# Show a small sample of min/max (full table is too wide to print)
+summary_tbl %>% select(1:20)
+
+app_train %>%
+  summarise(
+    n = n(),
+    days_emp_365243 = sum(DAYS_EMPLOYED == 365243, na.rm = TRUE),
+    pct_days_emp_365243 = mean(DAYS_EMPLOYED == 365243, na.rm = TRUE)
   )
 
-  imputer_tbl <- fit_imputer(train_feat, numeric_cols)
-
-  # 3) aggregate bureau if provided
-  bureau_agg <- NULL
-  if (!is.null(bureau_df)) {
-    bureau_agg <- aggregate_bureau(bureau_df)
-  }
-
-  list(
-    imputer = imputer_tbl,
-    bureau_agg = bureau_agg,
-    numeric_cols = numeric_cols
+app_train %>%
+  summarise(
+    min_days_birth = min(DAYS_BIRTH, na.rm = TRUE),
+    max_days_birth = max(DAYS_BIRTH, na.rm = TRUE),
+    min_days_employed = min(DAYS_EMPLOYED, na.rm = TRUE),
+    max_days_employed = max(DAYS_EMPLOYED, na.rm = TRUE)
   )
-}
 
-# Apply to TRAIN or TEST using stored objects (no leakage)
-apply_prep <- function(app_df, prep_obj) {
-  out <- prep_application_features(app_df)
-  out <- apply_imputer(out, prep_obj$imputer)
+app_train %>%
+  summarise(
+    neg_income = sum(AMT_INCOME_TOTAL < 0, na.rm = TRUE),
+    neg_credit = sum(AMT_CREDIT < 0, na.rm = TRUE),
+    neg_annuity = sum(AMT_ANNUITY < 0, na.rm = TRUE),
+    neg_goods_price = sum(AMT_GOODS_PRICE < 0, na.rm = TRUE)
+  )
 
-  # join bureau features if available
-  if (!is.null(prep_obj$bureau_agg)) {
-    out <- out %>% left_join(prep_obj$bureau_agg, by = "SK_ID_CURR")
-  }
+app_train %>%
+  select(SK_ID_CURR, AMT_INCOME_TOTAL, AMT_CREDIT, AMT_ANNUITY, AMT_GOODS_PRICE) %>%
+  arrange(desc(AMT_INCOME_TOTAL)) %>%
+  slice(1:10)
 
-  out
-}
+# variance of numeric columns (NA-safe)
+var_tbl <- app_train %>%
+  select(where(is.numeric)) %>%
+  summarise(across(everything(), ~var(.x, na.rm = TRUE))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "variance") %>%
+  arrange(variance)
+
+# show the lowest-variance variables
+var_tbl %>% slice(1:20)
+
+var_tbl %>%
+  filter(variance == 0)
+
 
 # -----------------------------------------
 # 5) Example usage (commented)
